@@ -1,0 +1,21 @@
+.env.local
+.env
+infra/.env
+postgres.txt
+
+# Java / Maven
+api/target/
+*.class
+api/src/main/resources/privateKey.pem
+
+# Node
+node_modules/
+admin-app/dist/
+user-app/dist/
+npm-debug.log*
+
+# IDE / OS
+.idea/
+.vscode/
+*.iml
+.DS_Store

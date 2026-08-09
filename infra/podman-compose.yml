@@ -1,0 +1,62 @@
+services:
+  postgres:
+    image: docker.io/library/postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-mylineup}
+      POSTGRES_USER: ${POSTGRES_USER:-mylineup}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mylineup}
+    ports:
+      - "5433:5432"
+    volumes:
+      - mylineup-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mylineup}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ../api
+      dockerfile: Containerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-mylineup}
+      DB_USER: ${POSTGRES_USER:-mylineup}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-mylineup}
+      JWT_ISSUER: ${JWT_ISSUER:-https://mylineup.local}
+      CORS_ORIGINS: ${CORS_ORIGINS:-/http://(localhost|127.0.0.1|192.168.[0-9]+.[0-9]+|10.[0-9]+.[0-9]+.[0-9]+|172.(1[6-9]|2[0-9]|3[01]).[0-9]+.[0-9]+):.*/}
+    ports:
+      - "8081:8080"
+
+  admin-app:
+    build:
+      context: ../admin-app
+      dockerfile: Containerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8081}
+        VITE_USER_APP_URL: ${VITE_USER_APP_URL:-http://localhost:8083}
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "8082:80"
+
+  user-app:
+    build:
+      context: ../user-app
+      dockerfile: Containerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8081}
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "8083:80"
+
+volumes:
+  mylineup-postgres-data:
