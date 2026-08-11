@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mylineup-api
+  labels:
+    app: mylineup-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mylineup-api
+  template:
+    metadata:
+      labels:
+        app: mylineup-api
+    spec:
+      containers:
+        - name: mylineup-api
+          image: ghcr.io/sebastiancie/mylineup-api:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+          env:
+            - name: DB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: mylineup-db
+                  key: DB_URL
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: mylineup-db
+                  key: DB_USER
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mylineup-db
+                  key: DB_PASSWORD
+            - name: JWT_ISSUER
+              value: https://mylineup-api-sebastianeichh-dev.apps.rm2.thpm.p1.openshiftapps.com
+            - name: CORS_ORIGINS
+              value: /https://mylineup-(admin|user)-app-sebastianeichh-dev\.apps\.rm2\.thpm\.p1\.openshiftapps\.com/
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mylineup-api
+  labels:
+    app: mylineup-api
+spec:
+  selector:
+    app: mylineup-api
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: mylineup-api
+  labels:
+    app: mylineup-api
+spec:
+  to:
+    kind: Service
+    name: mylineup-api
+  port:
+    targetPort: 8080
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

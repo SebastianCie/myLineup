@@ -5,12 +5,14 @@ Monorepo mit Admin-Bereich, mobiler User-App, Quarkus-API und PostgreSQL.
 ## Struktur
 
 ```
-api/          Quarkus (Java), REST-API, eigene Admin-Auth (BCrypt + JWT), Flyway-Migrationen
-admin-app/    React (Vite) – Admin-Portal, Registrierung/Login für Admins
-user-app/     React (Vite) – mobile-first PWA für Endnutzer
-infra/        podman-compose Setup für lokale Entwicklung
-postgres.txt  Zugangsdaten für das Neon-Projekt "BetaBattle" (NICHT für MyLineup, siehe unten)
-.env.local    Echte Zugangsdaten für das Neon-Projekt "MyLineup" (von `neon env pull`, gitignored)
+api/                Quarkus (Java), REST-API, eigene Admin-Auth (BCrypt + JWT), Flyway-Migrationen
+admin-app/          React (Vite) – Admin-Portal, Registrierung/Login für Admins
+user-app/           React (Vite) – mobile-first PWA für Endnutzer
+infra/              podman-compose Setup für lokale Entwicklung
+infra/openshift/    Deployment/Service/Route-Manifeste für die Red Hat Developer Sandbox
+.github/workflows/  GitHub Actions: Build & Push der drei Images nach GHCR
+postgres.txt        Zugangsdaten für das Neon-Projekt "BetaBattle" (NICHT für MyLineup, siehe unten)
+.env.local          Echte Zugangsdaten für das Neon-Projekt "MyLineup" (von `neon env pull`, gitignored)
 ```
 
 ## Wichtig: Datenbank-Zugangsdaten
@@ -64,11 +66,127 @@ cd admin-app && npm install && npm run dev
 cd user-app && npm install && npm run dev -- --port 5174
 ```
 
+## Deployment auf die Red Hat Developer Sandbox (OpenShift)
+
+Prod-Setup: die drei Images werden per GitHub Actions nach GHCR gebaut und laufen auf der
+kostenlosen [Red Hat Developer Sandbox](https://console.redhat.com/openshift/sandbox) gegen die
+Neon-DB (Projekt "MyLineup", siehe `.env.local`). Datenbank-Schema/-Migrationen übernimmt Flyway
+automatisch beim API-Start (`quarkus.flyway.migrate-at-start=true`).
+
+### 1. Images bauen lassen (GitHub Actions → GHCR)
+
+Passiert automatisch bei jedem Push auf `main` über
+[.github/workflows/build-push.yml](.github/workflows/build-push.yml). Manuell anstoßen:
+
+```bash
+gh workflow run build-push.yml
+gh run watch   # letzten Lauf beobachten
+```
+
+Ergebnis: `ghcr.io/sebastiancie/mylineup-api:latest`, `mylineup-admin-app:latest`,
+`mylineup-user-app:latest` (Owner-Teil des Pfads muss klein geschrieben sein, auch wenn der
+GitHub-User "SebastianCie" heißt). Die Packages sind public, daher braucht OpenShift kein
+Image-Pull-Secret.
+
+`admin-app`/`user-app` bekommen die API-URL als Vite-Build-Arg zur **Build-Zeit** eingebrannt
+(`VITE_API_URL`, `VITE_USER_APP_URL`). Diese Werte kommen aus GitHub Actions Repository-Variablen:
+
+```bash
+gh variable set VITE_API_URL --body "https://mylineup-api-<namespace>.<sandbox-domain>"
+gh variable set VITE_USER_APP_URL --body "https://mylineup-user-app-<namespace>.<sandbox-domain>"
+gh workflow run build-push.yml   # danach neu bauen, damit die URLs im Bundle landen
+```
+
+`<namespace>` und `<sandbox-domain>` erfährt man erst nach dem `oc login` (Schritt 2) bzw. nachdem
+die Route für `mylineup-api` existiert (Schritt 3) – siehe dort für die konkreten aktuellen Werte.
+
+### 2. Bei der Sandbox einloggen
+
+Login-Token ist zeitlich begrenzt (~24h) und muss bei jeder neuen Session neu geholt werden:
+
+1. https://console.redhat.com/openshift/sandbox öffnen, Sandbox starten ("Launch")
+2. In der OpenShift-Weboberfläche oben rechts auf den Usernamen klicken → **"Copy login command"**
+3. Ggf. erneut einloggen, dann auf **"Display Token"**
+4. Den angezeigten Befehl im Terminal ausführen, z. B.:
+   ```bash
+   oc login --token=sha256~xxxxxxxx --server=https://api.<cluster>.openshiftapps.com:6443
+   ```
+
+Aktuell verwendetes Projekt/Namespace: `sebastianeichh-dev` auf
+`apps.rm2.thpm.p1.openshiftapps.com` (wird beim Login automatisch ausgewählt). Prüfen mit
+`oc whoami` / `oc project`.
+
+### 3. Deployen
+
+Alle Manifeste liegen unter [infra/openshift/](infra/openshift/) (Deployment + Service + Route pro
+Service, Klartext-Namen ohne Platzhalter für den obigen Namespace/Domain – bei Bedarf anpassen,
+z. B. falls sich der Sandbox-Namespace mal ändert).
+
+**Einmalig:** DB-Zugangsdaten als Secret anlegen (Werte aus `.env.local`, `DATABASE_URL` in
+JDBC-Form umwandeln):
+
+```bash
+oc create secret generic mylineup-db \
+  --from-literal=DB_URL='jdbc:postgresql://ep-super-tree-b2d4oqlh-pooler.c-6.eu-central-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require' \
+  --from-literal=DB_USER='neondb_owner' \
+  --from-literal=DB_PASSWORD='<Passwort aus .env.local>'
+```
+
+**API deployen:**
+
+```bash
+oc apply -f infra/openshift/api.yaml
+oc rollout status deployment/mylineup-api
+curl https://mylineup-api-sebastianeichh-dev.apps.rm2.thpm.p1.openshiftapps.com/q/health
+```
+
+Danach die Route-URL der API in die GitHub-Variablen eintragen (siehe Schritt 1) und
+`admin-app`/`user-app` neu bauen lassen, bevor sie deployt werden – sonst zeigen sie auf
+`localhost`.
+
+**Frontends deployen:**
+
+```bash
+oc apply -f infra/openshift/admin-app.yaml
+oc apply -f infra/openshift/user-app.yaml
+oc rollout status deployment/mylineup-admin-app
+oc rollout status deployment/mylineup-user-app
+```
+
+URLs (auto-generiert aus Route-Name + Namespace + Sandbox-Domain):
+- API: `https://mylineup-api-sebastianeichh-dev.apps.rm2.thpm.p1.openshiftapps.com`
+- Admin-App: `https://mylineup-admin-app-sebastianeichh-dev.apps.rm2.thpm.p1.openshiftapps.com`
+- User-App: `https://mylineup-user-app-sebastianeichh-dev.apps.rm2.thpm.p1.openshiftapps.com`
+
+### 4. Nach einem Code-Update neu ausrollen
+
+```bash
+gh workflow run build-push.yml && gh run watch   # neue Images bauen
+oc rollout restart deployment/mylineup-api deployment/mylineup-admin-app deployment/mylineup-user-app
+```
+
+(`imagePullPolicy: Always` sorgt dafür, dass der `:latest`-Tag frisch gezogen wird – ein reiner
+`oc apply` ohne Restart würde ein bereits laufendes Deployment nicht neu starten.)
+
+### Stolpersteine, die schon aufgetreten sind
+
+- **Nginx-Image auf OpenShift:** Die Sandbox führt Container mit einer zufälligen, nicht-root
+  UID aus (restricted SCC). Das Standard-`nginx:alpine`-Image kann dadurch weder Port 80 binden
+  noch in `/var/cache/nginx` schreiben → CrashLoopBackOff. Fix: `admin-app`/`user-app` nutzen
+  `nginxinc/nginx-unprivileged` auf Port 8080 (siehe `Containerfile`/`nginx.conf`). Beim lokalen
+  Podman-Setup entsprechend auf `8080` im Container gemappt (`infra/podman-compose.yml`).
+- **GHCR-Image-Pfad muss komplett klein geschrieben sein** (`ghcr.io/sebastiancie/...`), auch wenn
+  der GitHub-Account groß geschrieben ist ("SebastianCie") – sonst `manifest unknown` beim Pull.
+- **Sandbox idled Deployments nach Inaktivität automatisch** auf 0 Replicas (siehe andere Projekte
+  im gleichen Namespace). Nach Idle-Phase reicht `oc scale deployment/mylineup-api --replicas=1`
+  (entsprechend für die anderen beiden).
+
 ## Offene Punkte
 
 - Fachliche Domäne von "MyLineup" ist noch nicht definiert — aktuell nur ein technisches
   Skeleton (Admin-Auth + `ping`-Beispiel-Entity zur E2E-Verifikation).
-- Für Prod-Deployment: `DB_URL`/`DB_USER`/`DB_PASSWORD` auf die echten Neon-Werte aus
-  `.env.local` setzen (nicht `postgres.txt`).
 - JWT-Signierschlüssel (`api/src/main/resources/privateKey.pem`) sind Dev-Schlüssel — vor echtem
   Produktivbetrieb rotieren und sicher verwalten (z. B. Secret Manager statt Classpath-Resource).
+- OpenShift-Deployment läuft aktuell mit 1 Replica pro Service ohne Autoscaling/Healthchecks
+  (`readinessProbe`/`livenessProbe`) in den Deployment-Manifesten — für echten Produktivbetrieb
+  ergänzen.
