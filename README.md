@@ -132,6 +132,21 @@ oc create secret generic mylineup-db \
   --from-literal=DB_PASSWORD='<Passwort aus .env.local>'
 ```
 
+**Einmalig:** eigenes JWT-Signierschlüsselpaar für Prod anlegen (NICHT den Dev-Key aus
+`api/src/main/resources/privateKey.pem` wiederverwenden – der ist gitignored und landet nie im
+GHCR-Image, siehe Stolpersteine unten):
+
+```bash
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out privateKey.pem
+openssl rsa -pubout -in privateKey.pem -out publicKey.pem
+
+oc create secret generic mylineup-jwt-keys \
+  --from-file=privateKey.pem=privateKey.pem \
+  --from-file=publicKey.pem=publicKey.pem
+
+rm privateKey.pem publicKey.pem   # nicht committen, nur im Secret aufbewahren
+```
+
 **API deployen:**
 
 ```bash
@@ -180,13 +195,23 @@ oc rollout restart deployment/mylineup-api deployment/mylineup-admin-app deploym
 - **Sandbox idled Deployments nach Inaktivität automatisch** auf 0 Replicas (siehe andere Projekte
   im gleichen Namespace). Nach Idle-Phase reicht `oc scale deployment/mylineup-api --replicas=1`
   (entsprechend für die anderen beiden).
+- **JWT-Signierschlüssel fehlt im GHCR-Image → 500 bei jedem Login:** `privateKey.pem`/
+  `publicKey.pem` sind gitignored (Dev-Keys, siehe `api/.gitignore`). Der GitHub-Actions-Build
+  checkt sauber aus git aus, hat die Dateien also nie – anders als der lokale Podman-Build, der
+  direkt vom Dateisystem baut und die (untracked, aber vorhandenen) lokalen Dev-Keys mit einpackt.
+  Fix: eigenes Schlüsselpaar als Secret `mylineup-jwt-keys` anlegen, in die API mounten
+  (`/etc/mylineup/jwt`) und `SMALLRYE_JWT_SIGN_KEY_LOCATION` / `MP_JWT_VERIFY_PUBLICKEY_LOCATION`
+  per Env-Var auf `file:/etc/mylineup/jwt/...` umbiegen (steht in `infra/openshift/api.yaml`).
 
 ## Offene Punkte
 
 - Fachliche Domäne von "MyLineup" ist noch nicht definiert — aktuell nur ein technisches
   Skeleton (Admin-Auth + `ping`-Beispiel-Entity zur E2E-Verifikation).
-- JWT-Signierschlüssel (`api/src/main/resources/privateKey.pem`) sind Dev-Schlüssel — vor echtem
-  Produktivbetrieb rotieren und sicher verwalten (z. B. Secret Manager statt Classpath-Resource).
+- Für lokale Entwicklung genutzte JWT-Schlüssel (`api/src/main/resources/privateKey.pem`) sind
+  reine Dev-Schlüssel. Auf OpenShift läuft bereits ein eigenes Prod-Schlüsselpaar über das Secret
+  `mylineup-jwt-keys` (siehe Deployment-Abschnitt) — bei Bedarf rotieren mit `openssl genpkey` +
+  `oc create secret ... --dry-run=client -o yaml | oc apply -f -` gefolgt von
+  `oc rollout restart deployment/mylineup-api` (invalidiert alle bestehenden Sessions).
 - OpenShift-Deployment läuft aktuell mit 1 Replica pro Service ohne Autoscaling/Healthchecks
   (`readinessProbe`/`livenessProbe`) in den Deployment-Manifesten — für echten Produktivbetrieb
   ergänzen.

@@ -40,6 +40,18 @@ spec:
               value: https://mylineup-api-sebastianeichh-dev.apps.rm2.thpm.p1.openshiftapps.com
             - name: CORS_ORIGINS
               value: /https://mylineup-(admin|user)-app-sebastianeichh-dev\.apps\.rm2\.thpm\.p1\.openshiftapps\.com/
+            - name: SMALLRYE_JWT_SIGN_KEY_LOCATION
+              value: file:/etc/mylineup/jwt/privateKey.pem
+            - name: MP_JWT_VERIFY_PUBLICKEY_LOCATION
+              value: file:/etc/mylineup/jwt/publicKey.pem
+          volumeMounts:
+            - name: jwt-keys
+              mountPath: /etc/mylineup/jwt
+              readOnly: true
+      volumes:
+        - name: jwt-keys
+          secret:
+            secretName: mylineup-jwt-keys
 ---
 apiVersion: v1
 kind: Service
